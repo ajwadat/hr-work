@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en" >
+<head>
+  <meta charset="UTF-8">
+  <title>myworkapp</title>
+  <link rel="stylesheet" href="./style.css">
+
+</head>
+<body>
+<!-- partial:index.partial.html -->
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Employee Management - Monthly View</title>
+  
+  <!-- Tailwind CDN (ניתן לשים גם דרך External Resources ב-CodePen) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="p-4 font-sans text-gray-900 bg-gray-50 min-h-screen">
+  <!-- Top Bar (Navigation & Global Month Filter) -->
+  <div class="flex flex-wrap items-center justify-between gap-4 mb-4">
+    <div id="navButtons" class="flex items-center gap-2"></div>
+    <div class="flex items-center gap-2">
+      <label for="globalMonth" class="font-semibold text-gray-700">בחר חודש:</label>
+      <input 
+        type="month" 
+        id="globalMonth" 
+        class="border rounded px-2 py-1 focus:outline-none focus:ring focus:border-blue-300"
+      />
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div id="mainContent"></div>
+</body>
+</html>
+<!-- partial -->
+  <script  src="./script.js"></script>
+
+</body>
+</html>

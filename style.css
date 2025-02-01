@@ -1,0 +1,2231 @@
+/***************************************************
+ *    Local Storage (שמירה מקומית)
+ ***************************************************/
+function saveToLocalStorage() {
+  localStorage.setItem('employees', JSON.stringify(employees));
+  localStorage.setItem('meetings', JSON.stringify(meetings));
+  localStorage.setItem('attendanceRecords', JSON.stringify(attendanceRecords));
+  localStorage.setItem('tardinessRecords', JSON.stringify(tardinessRecords));
+  localStorage.setItem('tardinessIdCounter', String(tardinessIdCounter));
+}
+
+function loadFromLocalStorage() {
+  const lsEmployees = localStorage.getItem('employees');
+  if(lsEmployees) {
+    employees = JSON.parse(lsEmployees);
+  } else {
+    // דוגמאות התחלתיות
+    employees = [
+      { 
+        id:1, 
+        name:'שרה', 
+        role:'מפתחת', 
+        startDate:'2025-01-01', 
+        endDate:'', 
+        status:'active',
+        percentPosition:100
+      },
+      {
+        id:2,
+        name:'דוד',
+        role:'מעצב',
+        startDate:'2025-02-01',
+        endDate:'',
+        status:'active',
+        percentPosition:80
+      },
+    ];
+  }
+
+  const lsMeetings = localStorage.getItem('meetings');
+  if(lsMeetings){
+    meetings = JSON.parse(lsMeetings);
+  } else {
+    meetings = [
+      { id:1, title:'סיעור מוחות', date:'2025-02-01', employeeId:1 },
+      { id:2, title:'עדכון פרויקט', date:'2025-02-10', employeeId:2 },
+    ];
+  }
+
+  const lsAttendance = localStorage.getItem('attendanceRecords');
+  if(lsAttendance){
+    attendanceRecords = JSON.parse(lsAttendance);
+  }
+
+  const lsTardiness = localStorage.getItem('tardinessRecords');
+  if(lsTardiness){
+    tardinessRecords = JSON.parse(lsTardiness);
+  }
+
+  const lsTid = localStorage.getItem('tardinessIdCounter');
+  if(lsTid) {
+    tardinessIdCounter = parseInt(lsTid,10);
+  } else {
+    tardinessIdCounter=1;
+  }
+}
+
+/***************************************************
+ *     Global Data
+ ***************************************************/
+let employees=[];
+let meetings=[];
+let attendanceRecords={};  // { empId: { "YYYY-MM-DD": { present:false, reason } } }
+let tardinessRecords={};   // { empId: { "YYYY-MM-DD": [ {id, reason, shiftStart, arrivalTime, minutesLate} ] } }
+let tardinessIdCounter=1;
+
+loadFromLocalStorage();
+
+// טאב נוכחי
+let currentTab='dashboard';
+// חודש סינון גלובלי ("YYYY-MM")
+let globalFilterMonth = getYearMonth(getToday());
+// לצורך אזהרת 2 איחורים
+let alerts = [];
+
+// "מצב עריכה" – עבור כל חוצץ
+let editModeEmployees = false;
+let editModeAttendance = false;
+let editModeTardiness = false;
+let editModeMeetings = false;
+
+// "Expand All" 
+let expandAllAttendance = false; // פלוסים בנוכחות
+let expandAllTardiness = false;  // פלוסים באיחורים
+
+/***************************************************
+ *   Helper Functions
+ ***************************************************/
+// מחזיר YYYY-MM מתוך YYYY-MM-DD
+function getYearMonth(dateStr){
+  return dateStr.slice(0,7);
+}
+// תאריך היום בפורמט YYYY-MM-DD
+function getToday(){
+  const d= new Date();
+  const y= d.getFullYear();
+  const m= String(d.getMonth()+1).padStart(2,'0');
+  const day= String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+// הבדל דקות בין HH:MM ל-HH:MM
+function diffMinutes(t1, t2){
+  const [h1,m1]= t1.split(':').map(Number);
+  const [h2,m2]= t2.split(':').map(Number);
+  return (h2*60+m2) - (h1*60+m1);
+}
+
+/***************************************************
+ *      Alerts Logic
+ ***************************************************/
+function updateAlerts(){
+  alerts=[];
+  // נשמור id של עובדים בעלי 2+ איחורים
+  employees.forEach(emp=>{
+    if(emp.status==='active'){
+      const tCount= getTardinessCountForMonth(emp.id);
+      if(tCount>=2){
+        alerts.push(emp.id);
+      }
+    }
+  });
+}
+
+/***************************************************
+ * Attendance (חיסורים)
+ ***************************************************/
+// מניעה כפולה לאותו יום
+function markAbsence(empId, dateStr, reason){
+  if(!attendanceRecords[empId]) {
+    attendanceRecords[empId]={};
+  }
+  // אם כבר יש חיסור באותו יום – חסימה
+  if(attendanceRecords[empId][dateStr]) {
+    alert('כבר דווח חיסור ביום זה עבור עובד זה!');
+    return;
+  }
+  attendanceRecords[empId][dateStr]= { present:false, reason:reason||'' };
+  saveToLocalStorage();
+}
+
+// אופציה לחיסור לתקופה
+function markAbsenceRange(empId, fromDate, toDate, reason){
+  // ניצור רשומה עבור כל יום בטווח
+  const from= new Date(fromDate);
+  const to= new Date(toDate);
+  if(to<from) {
+    alert('תאריך סיום לפני תאריך התחלה!');
+    return;
+  }
+  // נעבור יום-יום
+  let current= new Date(from.getTime());
+  while(current<=to){
+    const y= current.getFullYear();
+    const m= String(current.getMonth()+1).padStart(2,'0');
+    const d= String(current.getDate()).padStart(2,'0');
+    const dayStr= `${y}-${m}-${d}`;
+    markAbsence(empId, dayStr, reason);
+    // day++
+    current.setDate(current.getDate()+1);
+  }
+}
+
+function getAbsencesCountForMonth(empId){
+  if(!attendanceRecords[empId]) return 0;
+  let cnt=0;
+  for(const dateStr in attendanceRecords[empId]){
+    const rec= attendanceRecords[empId][dateStr];
+    if(!rec.present && getYearMonth(dateStr)=== globalFilterMonth){
+      cnt++;
+    }
+  }
+  return cnt;
+}
+function getAbsencesDetailForMonth(empId){
+  if(!attendanceRecords[empId]) return [];
+  const res=[];
+  for(const dateStr in attendanceRecords[empId]){
+    const rec= attendanceRecords[empId][dateStr];
+    if(!rec.present && getYearMonth(dateStr)===globalFilterMonth){
+      res.push({ date: dateStr, reason: rec.reason });
+    }
+  }
+  res.sort((a,b)=>(a.date<b.date? -1:1));
+  return res;
+}
+
+// עריכה (In-Place Mode)
+function updateAbsence(empId, oldDate, newDate, newReason){
+  // בדיקה אם כבר יש חיסור בתאריך החדש
+  if(oldDate!==newDate && attendanceRecords[empId][newDate]){
+    alert('כבר קיים חיסור בתאריך החדש – לא ניתן לעדכן!');
+    return;
+  }
+  delete attendanceRecords[empId][oldDate];
+  attendanceRecords[empId][newDate]={ present:false, reason:newReason };
+  saveToLocalStorage();
+}
+function deleteAbsence(empId, dateStr){
+  if(!confirm('למחוק חיסור זה?')) return;
+  delete attendanceRecords[empId][dateStr];
+  saveToLocalStorage();
+}
+
+/***************************************************
+ *  Tardiness (איחורים)
+ ***************************************************/
+// מניעה כפולה לאותו יום
+function addTardiness(empId, dateStr, reason, shiftStart, arrival){
+  if(!tardinessRecords[empId]){
+    tardinessRecords[empId]={};
+  }
+  if(!tardinessRecords[empId][dateStr]){
+    tardinessRecords[empId][dateStr]=[];
+  }
+  // אם כבר יש רשומה באותו יום
+  if(tardinessRecords[empId][dateStr].length>0) {
+    alert('כבר דווח איחור ליום זה עבור עובד זה!');
+    return;
+  }
+  const minutesLate= diffMinutes(shiftStart, arrival);
+  const finalLate= minutesLate>0? minutesLate:0;
+  tardinessRecords[empId][dateStr].push({
+    id: tardinessIdCounter++,
+    reason: reason||'',
+    shiftStart,
+    arrivalTime: arrival,
+    minutesLate: finalLate
+  });
+  saveToLocalStorage();
+}
+
+function getTardinessCountForMonth(empId){
+  if(!tardinessRecords[empId]) return 0;
+  let sum=0;
+  for(const dateStr in tardinessRecords[empId]){
+    if(getYearMonth(dateStr)=== globalFilterMonth){
+      sum+=tardinessRecords[empId][dateStr].length;
+    }
+  }
+  return sum;
+}
+function getTardinessDetailForMonth(empId){
+  if(!tardinessRecords[empId]) return [];
+  const arr=[];
+  for(const dateStr in tardinessRecords[empId]){
+    if(getYearMonth(dateStr)=== globalFilterMonth){
+      tardinessRecords[empId][dateStr].forEach(obj=>{
+        arr.push({ date: dateStr, reasonObj: obj });
+      });
+    }
+  }
+  arr.sort((a,b)=>(a.reasonObj.id< b.reasonObj.id? -1:1));
+  return arr;
+}
+
+// עריכה (In-Place)
+function updateTardiness(empId, oldDate, itemId, newDate, newReason, newShift, newArrival){
+  if(!tardinessRecords[empId][oldDate]) return;
+  const arr= tardinessRecords[empId][oldDate];
+  const itemIndex= arr.findIndex(i=> i.id=== itemId);
+  if(itemIndex===-1) return;
+
+  // אם התאריך שונה
+  if(oldDate!== newDate){
+    // בדיקה אם בתאריך החדש כבר קיימת רשומת איחור
+    if(!tardinessRecords[empId][newDate]){
+      tardinessRecords[empId][newDate]=[];
+    }
+    if(tardinessRecords[empId][newDate].length>0){
+      alert('כבר דווח איחור עבור תאריך חדש זה!');
+      return;
+    }
+  }
+
+  // מוציאים מהתאריך הישן
+  const [ oldObj ]= arr.splice(itemIndex,1);
+
+  const minLate= diffMinutes(newShift, newArrival);
+  const finalLate= minLate>0? minLate:0;
+  const newObj = {
+    id: itemId,
+    reason: newReason,
+    shiftStart: newShift,
+    arrivalTime: newArrival,
+    minutesLate: finalLate
+  };
+
+  // מכניסים לתאריך החדש
+  if(!tardinessRecords[empId][newDate]) {
+    tardinessRecords[empId][newDate]=[];
+  }
+  tardinessRecords[empId][newDate].push(newObj);
+  saveToLocalStorage();
+}
+function deleteTardiness(empId, dateStr, itemId){
+  if(!confirm('למחוק איחור זה?')) return;
+  const arr= tardinessRecords[empId][dateStr];
+  if(!arr) return;
+  const idx= arr.findIndex(i=> i.id=== itemId);
+  if(idx!==-1) arr.splice(idx,1);
+  saveToLocalStorage();
+}
+
+/***************************************************
+ *  Meetings (פגישות)
+ ***************************************************/
+function getMeetingsCountForMonth(empId){
+  return meetings.filter(m=>
+    m.employeeId===empId &&
+    getYearMonth(m.date)=== globalFilterMonth
+  ).length;
+}
+
+// עריכה (In-Place)
+function updateMeeting(meetingObj, newTitle, newDate, newEmpId){
+  meetingObj.title=newTitle;
+  meetingObj.date=newDate;
+  meetingObj.employeeId= Number(newEmpId);
+  saveToLocalStorage();
+}
+function deleteMeeting(mid){
+  if(!confirm('למחוק פגישה זו?')) return;
+  meetings= meetings.filter(m=> m.id!== mid);
+  saveToLocalStorage();
+}
+
+/***************************************************
+ *  Export to Excel (CSV) + Send Email
+ ***************************************************/
+function downloadCSV(csvContent, filename){
+  const blob= new Blob([csvContent], {type:'text/csv;charset=utf-8;'});
+  const link= document.createElement('a');
+  const url= URL.createObjectURL(blob);
+  link.href= url;
+  link.download= filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+// שליחה במייל ברמת דמו
+function sendDataByEmail(section){
+  let csv='';
+  let subject= `דו"ח ${section}`;
+  
+  switch(section){
+    case 'Dashboard': {
+      csv += 'שם עובד,סטטוס,אחוז משרה,איחורים,חיסורים,פגישות\n';
+      employees.forEach(emp=>{
+        if(emp.status==='active'){
+          const t= getTardinessCountForMonth(emp.id);
+          const a= getAbsencesCountForMonth(emp.id);
+          const m= getMeetingsCountForMonth(emp.id);
+          csv += `${emp.name},${emp.status},${emp.percentPosition}%,${t},${a},${m}\n`;
+        }
+      });
+      break;
+    }
+    case 'Attendance': {
+      csv += 'עובד,תאריך,סיבה\n';
+      employees.forEach(emp=>{
+        const details= getAbsencesDetailForMonth(emp.id);
+        details.forEach(d=>{
+          csv += `${emp.name},${d.date},${d.reason}\n`;
+        });
+      });
+      break;
+    }
+    case 'Tardiness': {
+      csv += 'עובד,תאריך,סיבה,תחילת משמרת,שעת הגעה,איחור(דקות)\n';
+      employees.forEach(emp=>{
+        const details= getTardinessDetailForMonth(emp.id);
+        details.forEach(d=>{
+          csv += `${emp.name},${d.date},${d.reasonObj.reason},${d.reasonObj.shiftStart},${d.reasonObj.arrivalTime},${d.reasonObj.minutesLate}\n`;
+        });
+      });
+      break;
+    }
+    case 'Meetings': {
+      csv += 'עובד,תאריך,כותרת\n';
+      employees.forEach(emp=>{
+        const arr= meetings.filter(m=>
+          m.employeeId=== emp.id &&
+          getYearMonth(m.date)=== globalFilterMonth
+        );
+        arr.forEach(mm=>{
+          csv+= `${emp.name},${mm.date},${mm.title}\n`;
+        });
+      });
+      break;
+    }
+    default:
+      alert('לא נמצא ייצוא למייל עבור: ' + section);
+      return;
+  }
+
+  const email= prompt('הזן כתובת מייל לשליחה:');
+  if(!email) return;
+  subject= encodeURIComponent(subject);
+  const body= encodeURIComponent(csv);
+  const mailtoLink= `mailto:${email}?subject=${subject}&body=${body}`;
+  window.location.href= mailtoLink;
+}
+
+function exportToExcel(section){
+  let csv='';
+  switch(section){
+    case 'Dashboard': {
+      csv+= 'שם עובד,סטטוס,אחוז משרה,איחורים,חיסורים,פגישות\n';
+      employees.forEach(e=>{
+        if(e.status==='active'){
+          const t= getTardinessCountForMonth(e.id);
+          const a= getAbsencesCountForMonth(e.id);
+          const m= getMeetingsCountForMonth(e.id);
+          csv+= `${e.name},${e.status},${e.percentPosition}%,${t},${a},${m}\n`;
+        }
+      });
+      downloadCSV(csv, 'dashboard.csv');
+      break;
+    }
+    case 'Attendance': {
+      csv+= 'עובד,תאריך,סיבה\n';
+      employees.forEach(e=>{
+        const details= getAbsencesDetailForMonth(e.id);
+        details.forEach(d=>{
+          csv+= `${e.name},${d.date},${d.reason}\n`;
+        });
+      });
+      downloadCSV(csv, 'attendance.csv');
+      break;
+    }
+    case 'Tardiness': {
+      csv+= 'עובד,תאריך,סיבה,תחילת משמרת,שעת הגעה,איחור(דקות)\n';
+      employees.forEach(e=>{
+        const arr= getTardinessDetailForMonth(e.id);
+        arr.forEach(obj=>{
+          csv+= `${e.name},${obj.date},${obj.reasonObj.reason},${obj.reasonObj.shiftStart},${obj.reasonObj.arrivalTime},${obj.reasonObj.minutesLate}\n`;
+        });
+      });
+      downloadCSV(csv, 'tardiness.csv');
+      break;
+    }
+    case 'Meetings': {
+      csv+= 'עובד,תאריך,כותרת\n';
+      employees.forEach(e=>{
+        const arr= meetings.filter(m=>
+          m.employeeId=== e.id &&
+          getYearMonth(m.date)=== globalFilterMonth
+        );
+        arr.forEach(mm=>{
+          csv+= `${e.name},${mm.date},${mm.title}\n`;
+        });
+      });
+      downloadCSV(csv, 'meetings.csv');
+      break;
+    }
+    default:
+      alert('לא נמצא export עבור: ' + section);
+  }
+}
+
+/***************************************************
+ *   Render Navigation & Main
+ ***************************************************/
+const globalMonthInput= document.getElementById('globalMonth');
+globalMonthInput.value= globalFilterMonth;
+globalMonthInput.onchange=(e)=>{
+  globalFilterMonth= e.target.value;
+  render();
+};
+
+function render(){
+  renderNavigation();
+  updateAlerts();
+  const content= document.getElementById('mainContent');
+  content.innerHTML='';
+
+  switch(currentTab){
+    case 'dashboard':
+      renderDashboard(content);
+      break;
+    case 'employees':
+      renderEmployees(content);
+      break;
+    case 'attendance':
+      renderMonthlyAttendance(content);
+      break;
+    case 'tardiness':
+      renderTardiness(content);
+      break;
+    case 'meetings':
+      renderMeetings(content);
+      break;
+  }
+}
+
+function renderNavigation(){
+  const nav= document.getElementById('navButtons');
+  nav.innerHTML='';
+  const tabs= [
+    {key:'dashboard', label:'מסך ראשי'},
+    {key:'employees', label:'עובדים'},
+    {key:'attendance', label:'נוכחות חודשית'},
+    {key:'tardiness', label:'איחורים'},
+    {key:'meetings', label:'פגישות'},
+  ];
+  tabs.forEach(t=>{
+    const btn= document.createElement('button');
+    btn.className=`px-4 py-2 border rounded-lg transition ${
+      currentTab=== t.key
+        ? 'bg-blue-500 text-white border-blue-500'
+        : 'bg-white text-blue-500 border-blue-500 hover:bg-blue-50'
+    }`;
+    btn.textContent= t.label;
+    btn.onclick=()=>{
+      currentTab= t.key;
+      render();
+    };
+    nav.appendChild(btn);
+  });
+}
+
+/***************************************************
+ *   Dashboard Render
+ ***************************************************/
+// חישוב "אחוז עמידה במשרה" (מודל בסיסי)
+function calculatePositionRate(empId){
+  const emp= employees.find(e=> e.id=== empId);
+  if(!emp) return 0;
+  const baseDays= 20; // הנחה
+  const potential= baseDays*(emp.percentPosition/100);
+  const abs= getAbsencesCountForMonth(empId);
+  const actual= potential- abs;
+  if(potential<=0) return 0;
+  return Math.round((actual/potential)*100);
+}
+
+// חישוב כמות עובדים פעילים
+function getActiveEmployeesCount(){
+  return employees.filter(e=> e.status==='active').length;
+}
+// איחורים לכלל העובדים
+function getAllTardiesThisMonth(){
+  let sum=0;
+  employees.forEach(e=>{
+    if(e.status==='active'){
+      sum+= getTardinessCountForMonth(e.id);
+    }
+  });
+  return sum;
+}
+// חיסורים לכלל העובדים
+function getAllAbsencesThisMonth(){
+  let sum=0;
+  employees.forEach(e=>{
+    if(e.status==='active'){
+      sum+= getAbsencesCountForMonth(e.id);
+    }
+  });
+  return sum;
+}
+// פגישות לכלל העובדים
+function getAllMeetingsThisMonth(){
+  let sum=0;
+  employees.forEach(e=>{
+    if(e.status==='active'){
+      sum+= getMeetingsCountForMonth(e.id);
+    }
+  });
+  return sum;
+}
+
+// כמות עובדים נוכחים יומי
+// נניח "היום" (getToday). אם לעובד יש חיסור באותו יום => אינו נוכח
+function getTodayPresenceCount(){
+  const todayStr= getToday(); 
+  // רק עובדים פעילים
+  let activeList= employees.filter(e=> e.status==='active');
+  let absentCount=0;
+  activeList.forEach(e=>{
+    const recs= attendanceRecords[e.id];
+    if(recs && recs[todayStr]) {
+      absentCount++;
+    }
+  });
+  return activeList.length - absentCount;
+}
+
+// האם להראות טבלאות מפורטות בעת לחיצה על ריבוע
+let showActiveEmployeesTable= false;
+let showAllTardiesTable= false;
+let showAllAbsencesTable= false;
+let showAllMeetingsTable= false;
+let showTodayPresenceTable= false; // עבור "עובדים נוכחים יומי"
+
+function renderDashboard(container){
+  // ריבועי סיכום
+  const stats = document.createElement('div');
+  stats.className='grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-4';
+
+  // 1) עובדים פעילים
+  {
+    const box= document.createElement('div');
+    box.className='bg-white shadow p-4 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100';
+    const label= document.createElement('div');
+    label.className='text-gray-600 font-semibold mb-2';
+    label.textContent='עובדים פעילים';
+    const val= document.createElement('div');
+    val.className='text-2xl font-bold text-blue-600';
+    const count= getActiveEmployeesCount();
+    val.textContent= count;
+    box.onclick= ()=>{
+      showActiveEmployeesTable= !showActiveEmployeesTable;
+      render();
+    };
+    box.appendChild(label);
+    box.appendChild(val);
+    stats.appendChild(box);
+  }
+  // 2) עובדים נוכחים יומי
+  {
+    const box= document.createElement('div');
+    box.className='bg-white shadow p-4 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100';
+    const label= document.createElement('div');
+    label.className='text-gray-600 font-semibold mb-2';
+    label.textContent='עובדים נוכחים היום';
+    const val= document.createElement('div');
+    val.className='text-2xl font-bold text-blue-600';
+    const presence= getTodayPresenceCount();
+    val.textContent= presence;
+    box.onclick= ()=>{
+      showTodayPresenceTable= !showTodayPresenceTable;
+      render();
+    };
+    box.appendChild(label);
+    box.appendChild(val);
+    stats.appendChild(box);
+  }
+  // 3) איחורים
+  {
+    const box= document.createElement('div');
+    box.className='bg-white shadow p-4 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100';
+    const label= document.createElement('div');
+    label.className='text-gray-600 font-semibold mb-2';
+    label.textContent='איחורים החודש';
+    const val= document.createElement('div');
+    val.className='text-2xl font-bold text-blue-600';
+    const totalTardies= getAllTardiesThisMonth();
+    val.textContent= totalTardies;
+    box.onclick= ()=>{
+      showAllTardiesTable= !showAllTardiesTable;
+      render();
+    };
+    box.appendChild(label);
+    box.appendChild(val);
+    stats.appendChild(box);
+  }
+  // 4) חיסורים
+  {
+    const box= document.createElement('div');
+    box.className='bg-white shadow p-4 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100';
+    const label= document.createElement('div');
+    label.className='text-gray-600 font-semibold mb-2';
+    label.textContent='חיסורים החודש';
+    const val= document.createElement('div');
+    val.className='text-2xl font-bold text-blue-600';
+    const totalAbs= getAllAbsencesThisMonth();
+    val.textContent= totalAbs;
+    box.onclick= ()=>{
+      showAllAbsencesTable= !showAllAbsencesTable;
+      render();
+    };
+    box.appendChild(label);
+    box.appendChild(val);
+    stats.appendChild(box);
+  }
+  // 5) פגישות
+  {
+    const box= document.createElement('div');
+    box.className='bg-white shadow p-4 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-100';
+    const label= document.createElement('div');
+    label.className='text-gray-600 font-semibold mb-2';
+    label.textContent='פגישות החודש';
+    const val= document.createElement('div');
+    val.className='text-2xl font-bold text-blue-600';
+    const totalMeets= getAllMeetingsThisMonth();
+    val.textContent= totalMeets;
+    box.onclick= ()=>{
+      showAllMeetingsTable= !showAllMeetingsTable;
+      render();
+    };
+    box.appendChild(label);
+    box.appendChild(val);
+    stats.appendChild(box);
+  }
+
+  container.appendChild(stats);
+
+  // כותרת
+  const card= document.createElement('div');
+  card.className='p-4 shadow-lg rounded-2xl bg-white';
+  const title= document.createElement('h2');
+  title.className='text-2xl mb-2 font-bold text-gray-700';
+  title.textContent='מסך ראשי - סיכום חודשי';
+  card.appendChild(title);
+
+  // טבלה מפורטת של עובדים פעילים
+  // נציג אחוז משרה, איחורים, חיסורים, פגישות, ואחוז עמידה
+  // רק אם showActiveEmployeesTable=true
+  if(showActiveEmployeesTable){
+    const tWrap= document.createElement('div');
+    tWrap.className='overflow-x-auto mt-2 mb-4 border border-gray-200 p-2';
+
+    const table= document.createElement('table');
+    table.className='min-w-full text-right border-collapse';
+
+    const thead= document.createElement('thead');
+    thead.innerHTML= `
+      <tr class="border-b bg-gray-100">
+        <th class="px-2 py-1">שם</th>
+        <th class="px-2 py-1">אחוז משרה</th>
+        <th class="px-2 py-1">איחורים</th>
+        <th class="px-2 py-1">חיסורים</th>
+        <th class="px-2 py-1">פגישות</th>
+        <th class="px-2 py-1">עמידה במשרה</th>
+      </tr>
+    `;
+    table.appendChild(thead);
+
+    const tbody= document.createElement('tbody');
+    employees.forEach(e=>{
+      if(e.status==='active'){
+        const row= document.createElement('tr');
+        row.className='border-b hover:bg-gray-50';
+        const tardies= getTardinessCountForMonth(e.id);
+        const abs= getAbsencesCountForMonth(e.id);
+        const mee= getMeetingsCountForMonth(e.id);
+        const pos= calculatePositionRate(e.id);
+
+        // name
+        const nameTd= document.createElement('td');
+        nameTd.className='px-2 py-1';
+        nameTd.textContent= e.name;
+        row.appendChild(nameTd);
+
+        // אחוז משרה
+        const pct= document.createElement('td');
+        pct.className='px-2 py-1';
+        pct.textContent= e.percentPosition+'%';
+        row.appendChild(pct);
+
+        // איחורים
+        const tTd= document.createElement('td');
+        tTd.className='px-2 py-1';
+        tTd.textContent= tardies;
+        row.appendChild(tTd);
+
+        // חיסורים
+        const aTd= document.createElement('td');
+        aTd.className='px-2 py-1';
+        aTd.textContent= abs;
+        row.appendChild(aTd);
+
+        // פגישות
+        const mTd= document.createElement('td');
+        mTd.className='px-2 py-1';
+        mTd.textContent= mee;
+        row.appendChild(mTd);
+
+        // עמידה
+        const pTd= document.createElement('td');
+        pTd.className='px-2 py-1';
+        pTd.textContent= pos+'%';
+        row.appendChild(pTd);
+
+        tbody.appendChild(row);
+      }
+    });
+    table.appendChild(tbody);
+    tWrap.appendChild(table);
+
+    card.appendChild(tWrap);
+  }
+
+  // אם לוחצים על "עובדים נוכחים יומי"
+  if(showTodayPresenceTable){
+    const wrap= document.createElement('div');
+    wrap.className='overflow-x-auto mt-2 mb-4 border border-gray-200 p-2';
+
+    const table= document.createElement('table');
+    table.className='min-w-full text-right border-collapse';
+    const thead= document.createElement('thead');
+    thead.innerHTML= `
+      <tr class="border-b bg-gray-100">
+        <th class="px-2 py-1">שם עובד (נוכח)</th>
+      </tr>
+    `;
+    table.appendChild(thead);
+
+    const tbody= document.createElement('tbody');
+    const today= getToday();
+    employees.forEach(e=>{
+      if(e.status==='active'){
+        const rec= attendanceRecords[e.id];
+        if(!rec || !rec[today]) {
+          // => העובד נוכח
+          const row= document.createElement('tr');
+          row.className='border-b hover:bg-gray-50';
+          const td= document.createElement('td');
+          td.className='px-2 py-1';
+          td.textContent= e.name;
+          row.appendChild(td);
+          tbody.appendChild(row);
+        }
+      }
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+  }
+
+  // אם לוחצים על "איחורים החודש" ורוצים טבלה
+  if(showAllTardiesTable){
+    const wrap= document.createElement('div');
+    wrap.className='overflow-x-auto mt-2 mb-4 border border-gray-200 p-2';
+    wrap.innerHTML= `<h3 class="font-semibold mb-2">איחורים כלליים</h3>`;
+    const table= document.createElement('table');
+    table.className='min-w-full text-right border-collapse';
+    const thead= document.createElement('thead');
+    thead.innerHTML=`
+      <tr class="border-b bg-gray-100">
+        <th class="px-2 py-1">עובד</th>
+        <th class="px-2 py-1">כמות איחורים</th>
+      </tr>
+    `;
+    table.appendChild(thead);
+
+    const tbody= document.createElement('tbody');
+    employees.forEach(e=>{
+      if(e.status==='active'){
+        const tard= getTardinessCountForMonth(e.id);
+        if(tard>0){
+          const row= document.createElement('tr');
+          row.className='border-b hover:bg-gray-50';
+          const nameTd= document.createElement('td');
+          nameTd.className='px-2 py-1';
+          nameTd.textContent= e.name;
+          const tardTd= document.createElement('td');
+          tardTd.className='px-2 py-1';
+          tardTd.textContent= tard;
+          row.appendChild(nameTd);
+          row.appendChild(tardTd);
+          tbody.appendChild(row);
+        }
+      }
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+  }
+
+  // אם לוחצים על "חיסורים החודש"
+  if(showAllAbsencesTable){
+    const wrap= document.createElement('div');
+    wrap.className='overflow-x-auto mt-2 mb-4 border border-gray-200 p-2';
+    wrap.innerHTML= `<h3 class="font-semibold mb-2">חיסורים כלליים</h3>`;
+    const table= document.createElement('table');
+    table.className='min-w-full text-right border-collapse';
+    const thead= document.createElement('thead');
+    thead.innerHTML= `
+      <tr class="border-b bg-gray-100">
+        <th class="px-2 py-1">עובד</th>
+        <th class="px-2 py-1">כמות חיסורים</th>
+      </tr>
+    `;
+    table.appendChild(thead);
+    const tbody= document.createElement('tbody');
+    employees.forEach(e=>{
+      if(e.status==='active'){
+        const abs= getAbsencesCountForMonth(e.id);
+        if(abs>0){
+          const row= document.createElement('tr');
+          row.className='border-b hover:bg-gray-50';
+          const nameTd= document.createElement('td');
+          nameTd.className='px-2 py-1';
+          nameTd.textContent= e.name;
+          const absTd= document.createElement('td');
+          absTd.className='px-2 py-1';
+          absTd.textContent= abs;
+          row.appendChild(nameTd);
+          row.appendChild(absTd);
+          tbody.appendChild(row);
+        }
+      }
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+  }
+
+  // אם לוחצים על "פגישות החודש"
+  if(showAllMeetingsTable){
+    const wrap= document.createElement('div');
+    wrap.className='overflow-x-auto mt-2 mb-4 border border-gray-200 p-2';
+    wrap.innerHTML= `<h3 class="font-semibold mb-2">פגישות כלליות</h3>`;
+    const table= document.createElement('table');
+    table.className='min-w-full text-right border-collapse';
+    const thead= document.createElement('thead');
+    thead.innerHTML=`
+      <tr class="border-b bg-gray-100">
+        <th class="px-2 py-1">עובד</th>
+        <th class="px-2 py-1">כמות פגישות</th>
+      </tr>
+    `;
+    table.appendChild(thead);
+
+    const tbody= document.createElement('tbody');
+    employees.forEach(e=>{
+      if(e.status==='active'){
+        const meets= getMeetingsCountForMonth(e.id);
+        if(meets>0){
+          const row= document.createElement('tr');
+          row.className='border-b hover:bg-gray-50';
+          const nameTd= document.createElement('td');
+          nameTd.className='px-2 py-1';
+          nameTd.textContent= e.name;
+          const valTd= document.createElement('td');
+          valTd.className='px-2 py-1';
+          valTd.textContent= meets;
+          row.appendChild(nameTd);
+          row.appendChild(valTd);
+          tbody.appendChild(row);
+        }
+      }
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    card.appendChild(wrap);
+  }
+
+  // כפתורי יצוא/מייל
+  const btnContainer= document.createElement('div');
+  btnContainer.className='flex gap-2 mt-4';
+
+  const exportBtn= document.createElement('button');
+  exportBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  exportBtn.textContent='יצוא לאקסל';
+  exportBtn.onclick=()=> exportToExcel('Dashboard');
+  btnContainer.appendChild(exportBtn);
+
+  const mailBtn= document.createElement('button');
+  mailBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  mailBtn.textContent='שלח במייל';
+  mailBtn.onclick=()=> sendDataByEmail('Dashboard');
+  btnContainer.appendChild(mailBtn);
+
+  card.appendChild(btnContainer);
+
+  container.appendChild(card);
+}
+
+/***************************************************
+ * Employees Tab (עריכת נתונים בלחיצה אחת)
+ ***************************************************/
+// מצב עריכה – editModeEmployees
+function toggleEmployeesEditMode(){
+  editModeEmployees= !editModeEmployees;
+  render();
+}
+
+function renderEmployees(container){
+  const card= document.createElement('div');
+  card.className='p-4 shadow-lg rounded-2xl bg-white mb-4';
+
+  // כותרת וכפתור עריכה כולל
+  const header= document.createElement('div');
+  header.className='flex items-center justify-between mb-2';
+
+  const title= document.createElement('h2');
+  title.className='text-2xl font-bold text-gray-700';
+  title.textContent='עובדים';
+  header.appendChild(title);
+
+  const editBtn= document.createElement('button');
+  editBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  editBtn.textContent= editModeEmployees? 'סיום עריכה' : 'עריכת נתונים';
+  editBtn.onclick= ()=> toggleEmployeesEditMode();
+  header.appendChild(editBtn);
+
+  card.appendChild(header);
+
+  // טופס להוספת עובד
+  const formDiv= document.createElement('div');
+  formDiv.className='grid gap-2 mb-4 md:grid-cols-2 lg:grid-cols-3';
+
+  // ... (כמו קודם) הוספת עובד חדש
+  // ...
+  // כדי לא להעמיס, נחסוך כאן (זהה לקוד הקודם שלך).
+
+  // את כל הקוד הזה נשאיר מהדוגמה הקודמת (רק הנחיה: "בשביל לצמצם").
+  // נניח שמוגדרים אותם משתנים: newEmployeeName, newEmployeeRole וכו'...
+  // לשם הקיצור, אשים באותו סגנון:
+
+  {
+    const lbl= document.createElement('label');
+    lbl.textContent='שם העובד';
+    lbl.className='font-semibold text-gray-600';
+    formDiv.appendChild(lbl);
+    const inp= document.createElement('input');
+    inp.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+    inp.value= newEmployeeName;
+    inp.oninput= (e)=> newEmployeeName= e.target.value;
+    formDiv.appendChild(inp);
+  }
+  // ... role...
+  {
+    const lbl= document.createElement('label');
+    lbl.textContent='תפקיד העובד';
+    lbl.className='font-semibold text-gray-600';
+    formDiv.appendChild(lbl);
+    const inp= document.createElement('input');
+    inp.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+    inp.value= newEmployeeRole;
+    inp.oninput= (e)=> newEmployeeRole= e.target.value;
+    formDiv.appendChild(inp);
+  }
+  // ... startDate ...
+  {
+    const lbl= document.createElement('label');
+    lbl.textContent='תאריך תחילת עבודה';
+    lbl.className='font-semibold text-gray-600';
+    formDiv.appendChild(lbl);
+    const inp= document.createElement('input');
+    inp.type='date';
+    inp.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+    inp.value= newEmployeeStartDate;
+    inp.onchange=(e)=> newEmployeeStartDate= e.target.value;
+    formDiv.appendChild(inp);
+  }
+  // ... percentPosition ...
+  {
+    const lbl= document.createElement('label');
+    lbl.textContent='אחוז משרה';
+    lbl.className='font-semibold text-gray-600';
+    formDiv.appendChild(lbl);
+    const inp= document.createElement('input');
+    inp.type='number';
+    inp.min='0';
+    inp.max='100';
+    inp.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+    inp.value= newEmployeePercentPosition;
+    inp.onchange=(e)=>{
+      newEmployeePercentPosition= parseInt(e.target.value,10);
+      if(isNaN(newEmployeePercentPosition)) newEmployeePercentPosition=100;
+    };
+    formDiv.appendChild(inp);
+  }
+  // ... status ...
+  {
+    const lbl= document.createElement('label');
+    lbl.textContent='סטטוס עובד';
+    lbl.className='font-semibold text-gray-600';
+    formDiv.appendChild(lbl);
+    const sel= document.createElement('select');
+    sel.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+    sel.innerHTML= `<option value="active">פעיל</option><option value="inactive">לא פעיל</option>`;
+    sel.value= newEmployeeStatus;
+    sel.onchange=(e)=> newEmployeeStatus= e.target.value;
+    formDiv.appendChild(sel);
+  }
+
+  {
+    const btn= document.createElement('button');
+    btn.className='mt-2 bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600';
+    btn.textContent='הוסף עובד';
+    btn.onclick=()=>{
+      if(!newEmployeeName || !newEmployeeRole) return;
+      const newId= employees.length? Math.max(...employees.map(e=> e.id))+1 :1;
+      const emp= {
+        id:newId,
+        name:newEmployeeName.trim(),
+        role:newEmployeeRole.trim(),
+        startDate:newEmployeeStartDate||'',
+        endDate:'',
+        status:newEmployeeStatus,
+        percentPosition: newEmployeePercentPosition
+      };
+      employees.push(emp);
+      // reset
+      newEmployeeName='';
+      newEmployeeRole='';
+      newEmployeeStartDate='';
+      newEmployeeStatus='active';
+      newEmployeePercentPosition=100;
+      saveToLocalStorage();
+      render();
+    };
+    formDiv.appendChild(btn);
+  }
+
+  card.appendChild(formDiv);
+
+  // טבלה
+  const hr= document.createElement('hr');
+  hr.className='my-4';
+  card.appendChild(hr);
+
+  const tableDiv= document.createElement('div');
+  tableDiv.className='overflow-x-auto';
+
+  const table= document.createElement('table');
+  table.className='min-w-full text-right border-collapse';
+
+  const thead= document.createElement('thead');
+  thead.innerHTML=`
+    <tr class="border-b bg-gray-100">
+      <th class="px-4 py-2">שם</th>
+      <th class="px-4 py-2">תפקיד</th>
+      <th class="px-4 py-2">תאריך תחילה</th>
+      <th class="px-4 py-2">תאריך סיום</th>
+      <th class="px-4 py-2">סטטוס</th>
+      <th class="px-4 py-2">אחוז משרה</th>
+      <th class="px-4 py-2">מחק</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody= document.createElement('tbody');
+  employees.forEach(e=>{
+    const row= document.createElement('tr');
+    row.className='border-b hover:bg-gray-50';
+
+    // name
+    const nameTd= document.createElement('td');
+    nameTd.className='px-4 py-2 text-blue-700 underline cursor-pointer';
+    if(!editModeEmployees){
+      // תצוגה רגילה
+      nameTd.textContent= e.name;
+    } else {
+      // עריכת שדה
+      const inp= document.createElement('input');
+      inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+      inp.value= e.name;
+      inp.onchange=(ev)=>{
+        e.name= ev.target.value.trim();
+        saveToLocalStorage();
+      };
+      nameTd.textContent='';
+      nameTd.appendChild(inp);
+    }
+    nameTd.onclick= ()=> showEmployeeDetails(e.id);
+    row.appendChild(nameTd);
+
+    // role
+    const roleTd= document.createElement('td');
+    roleTd.className='px-4 py-2';
+    if(!editModeEmployees){
+      roleTd.textContent= e.role;
+    } else {
+      const inp= document.createElement('input');
+      inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+      inp.value= e.role;
+      inp.onchange=(ev)=>{
+        e.role= ev.target.value.trim();
+        saveToLocalStorage();
+      };
+      roleTd.textContent='';
+      roleTd.appendChild(inp);
+    }
+    row.appendChild(roleTd);
+
+    // startDate
+    const sTd= document.createElement('td');
+    sTd.className='px-4 py-2';
+    if(!editModeEmployees){
+      sTd.textContent= e.startDate;
+    } else {
+      const inp= document.createElement('input');
+      inp.type='date';
+      inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+      inp.value= e.startDate;
+      inp.onchange=(ev)=>{
+        e.startDate= ev.target.value;
+        saveToLocalStorage();
+      };
+      sTd.textContent='';
+      sTd.appendChild(inp);
+    }
+    row.appendChild(sTd);
+
+    // endDate
+    const endTd= document.createElement('td');
+    endTd.className='px-4 py-2';
+    if(e.status==='inactive' || editModeEmployees){
+      // מאפשר עריכה רק אם עובד לא פעיל, או תמיד אם במצב עריכה
+      if(!editModeEmployees && e.status==='inactive'){
+        const endInput= document.createElement('input');
+        endInput.type='date';
+        endInput.value=e.endDate;
+        endInput.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+        endInput.onchange=(ev)=>{
+          e.endDate= ev.target.value;
+          saveToLocalStorage();
+        };
+        endTd.appendChild(endInput);
+      } else if(editModeEmployees){
+        // במצב עריכה נציב אינפוט בלי קשר לסטטוס
+        const endInput= document.createElement('input');
+        endInput.type='date';
+        endInput.value=e.endDate;
+        endInput.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+        endInput.onchange=(ev)=>{
+          e.endDate= ev.target.value;
+          saveToLocalStorage();
+        };
+        endTd.textContent='';
+        endTd.appendChild(endInput);
+      } else {
+        endTd.textContent= e.endDate;
+      }
+    } else {
+      endTd.textContent= e.endDate || '';
+    }
+    row.appendChild(endTd);
+
+    // status
+    const statusTd= document.createElement('td');
+    statusTd.className='px-4 py-2';
+    if(!editModeEmployees){
+      statusTd.textContent= (e.status==='active'?'פעיל':'לא פעיל');
+    } else {
+      const sel= document.createElement('select');
+      sel.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+      const optA= document.createElement('option');
+      optA.value='active'; optA.textContent='פעיל';
+      sel.appendChild(optA);
+      const optI= document.createElement('option');
+      optI.value='inactive'; optI.textContent='לא פעיל';
+      sel.appendChild(optI);
+      sel.value= e.status;
+      sel.onchange=(ev)=>{
+        e.status= ev.target.value;
+        // אם הפך ללא פעיל ואין תאריך סיום, נבקש?
+        if(e.status==='inactive' && !e.endDate){
+          e.endDate='';
+        } else if(e.status==='active'){
+          e.endDate='';
+        }
+        saveToLocalStorage();
+        render(); // עלול לשנות UI
+      };
+      statusTd.textContent='';
+      statusTd.appendChild(sel);
+    }
+    row.appendChild(statusTd);
+
+    // אחוז משרה
+    const pctTd= document.createElement('td');
+    pctTd.className='px-4 py-2';
+    if(!editModeEmployees){
+      pctTd.textContent= e.percentPosition+'%';
+    } else {
+      const inp= document.createElement('input');
+      inp.type='number';
+      inp.min='0';
+      inp.max='100';
+      inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+      inp.value= e.percentPosition;
+      inp.onchange=(ev)=>{
+        let val= parseInt(ev.target.value,10);
+        if(isNaN(val)) val=100;
+        e.percentPosition= val;
+        saveToLocalStorage();
+      };
+      pctTd.textContent='';
+      pctTd.appendChild(inp);
+    }
+    row.appendChild(pctTd);
+
+    // מחיקה (לא תלוי במצב עריכה)
+    const delTd= document.createElement('td');
+    delTd.className='px-4 py-2';
+    const delBtn= document.createElement('button');
+    delBtn.className='border border-red-300 text-red-500 rounded px-2 py-1 text-sm hover:bg-red-50';
+    delBtn.textContent='מחק';
+    delBtn.onclick=()=>{
+      if(!confirm('למחוק עובד זה?')) return;
+      employees= employees.filter(emp=> emp.id!== e.id);
+      saveToLocalStorage();
+      render();
+    };
+    delTd.appendChild(delBtn);
+    row.appendChild(delTd);
+
+    tbody.appendChild(row);
+  });
+
+  table.appendChild(tbody);
+  tableDiv.appendChild(table);
+  card.appendChild(tableDiv);
+
+  container.appendChild(card);
+}
+
+/***************************************************
+ * Attendance Tab
+ ***************************************************/
+// מצב עריכה כולל
+function toggleAttendanceEditMode(){
+  editModeAttendance= !editModeAttendance;
+  render();
+}
+function toggleExpandAllAttendance(){
+  expandAllAttendance= !expandAllAttendance;
+  if(expandAllAttendance){
+    // פותח את כל הפלוסים
+    employees.forEach(e=> attendanceExpanded[e.id]=true);
+  } else {
+    // סוגר
+    employees.forEach(e=> attendanceExpanded[e.id]=false);
+  }
+  render();
+}
+
+function renderMonthlyAttendance(container){
+  const card= document.createElement('div');
+  card.className='p-4 shadow-lg rounded-2xl bg-white mb-4';
+
+  // כותרת + כפתור עריכה
+  const header= document.createElement('div');
+  header.className='flex items-center justify-between mb-2';
+
+  const title= document.createElement('h2');
+  title.className='text-2xl font-bold text-gray-700';
+  title.textContent='נוכחות חודשית';
+  header.appendChild(title);
+
+  const editBtn= document.createElement('button');
+  editBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  editBtn.textContent= editModeAttendance? 'סיום עריכה' : 'עריכת נתונים';
+  editBtn.onclick= ()=> toggleAttendanceEditMode();
+  header.appendChild(editBtn);
+
+  card.appendChild(header);
+
+  // טופס: הוספת חיסור
+  const formDiv= document.createElement('div');
+  formDiv.className='flex gap-4 items-end flex-wrap mb-4';
+
+  // בוחר עובד, תאריך חיסור, סיבה
+  let selectedEmployeeId='';
+  let absenceDate= getToday();
+  let absenceReason='';
+
+  {
+    const d= document.createElement('div');
+    d.className='w-40';
+    const lbl= document.createElement('label');
+    lbl.className='block font-semibold text-gray-600';
+    lbl.textContent='בחר עובד:';
+    d.appendChild(lbl);
+
+    const sel= document.createElement('select');
+    sel.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    sel.innerHTML='<option value="">בחר עובד...</option>';
+    employees.forEach(e=>{
+      const opt= document.createElement('option');
+      opt.value= e.id;
+      opt.textContent= e.name;
+      sel.appendChild(opt);
+    });
+    sel.onchange=(ev)=> selectedEmployeeId= ev.target.value;
+    d.appendChild(sel);
+    formDiv.appendChild(d);
+  }
+  {
+    const d= document.createElement('div');
+    d.className='w-40';
+    const lbl= document.createElement('label');
+    lbl.className='block font-semibold text-gray-600';
+    lbl.textContent='תאריך חיסור:';
+    d.appendChild(lbl);
+
+    const inp= document.createElement('input');
+    inp.type='date';
+    inp.value= absenceDate;
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.onchange=(ev)=> absenceDate= ev.target.value;
+    d.appendChild(inp);
+    formDiv.appendChild(d);
+  }
+  {
+    const d= document.createElement('div');
+    d.className='w-60';
+    const lbl= document.createElement('label');
+    lbl.className='block font-semibold text-gray-600';
+    lbl.textContent='סיבת חיסור:';
+    d.appendChild(lbl);
+
+    const inp= document.createElement('input');
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.value= absenceReason;
+    inp.oninput=(ev)=> absenceReason= ev.target.value;
+    d.appendChild(inp);
+    formDiv.appendChild(d);
+  }
+
+  const addBtn= document.createElement('button');
+  addBtn.className='h-9 bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600';
+  addBtn.textContent='הוסף חיסור';
+  addBtn.onclick=()=>{
+    if(!selectedEmployeeId) return;
+    markAbsence(Number(selectedEmployeeId), absenceDate, absenceReason);
+    render();
+  };
+  formDiv.appendChild(addBtn);
+
+  card.appendChild(formDiv);
+
+  // חיסור לתקופה
+  const periodDiv= document.createElement('div');
+  periodDiv.className='flex gap-4 items-end flex-wrap mb-4';
+  let selectedEmployeeId2='';
+  let fromDate= getToday();
+  let toDate= getToday();
+  let reason2='';
+  {
+    const d= document.createElement('div');
+    d.className='w-40';
+    const lbl= document.createElement('label');
+    lbl.textContent='בחר עובד:';
+    lbl.className='block font-semibold text-gray-600';
+    d.appendChild(lbl);
+
+    const sel= document.createElement('select');
+    sel.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    sel.innerHTML='<option value="">בחר עובד...</option>';
+    employees.forEach(e=>{
+      const opt= document.createElement('option');
+      opt.value= e.id;
+      opt.textContent= e.name;
+      sel.appendChild(opt);
+    });
+    sel.onchange=(ev)=> selectedEmployeeId2= ev.target.value;
+    d.appendChild(sel);
+    periodDiv.appendChild(d);
+  }
+  {
+    const dd= document.createElement('div');
+    dd.className='w-40';
+    const ll= document.createElement('label');
+    ll.className='block font-semibold text-gray-600';
+    ll.textContent='מתאריך:';
+    dd.appendChild(ll);
+
+    const inp= document.createElement('input');
+    inp.type='date';
+    inp.value= fromDate;
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.onchange=(ev)=> fromDate= ev.target.value;
+    dd.appendChild(inp);
+    periodDiv.appendChild(dd);
+  }
+  {
+    const dd= document.createElement('div');
+    dd.className='w-40';
+    const ll= document.createElement('label');
+    ll.className='block font-semibold text-gray-600';
+    ll.textContent='עד תאריך:';
+    dd.appendChild(ll);
+
+    const inp= document.createElement('input');
+    inp.type='date';
+    inp.value= toDate;
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.onchange=(ev)=> toDate= ev.target.value;
+    dd.appendChild(inp);
+    periodDiv.appendChild(dd);
+  }
+  {
+    const dd= document.createElement('div');
+    dd.className='w-60';
+    const ll= document.createElement('label');
+    ll.className='block font-semibold text-gray-600';
+    ll.textContent='סיבת חיסור:';
+    dd.appendChild(ll);
+
+    const inp= document.createElement('input');
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.value= reason2;
+    inp.oninput=(ev)=> reason2= ev.target.value;
+    dd.appendChild(inp);
+    periodDiv.appendChild(dd);
+  }
+
+  const rangeBtn= document.createElement('button');
+  rangeBtn.className='h-9 bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600';
+  rangeBtn.textContent='חיסור לתקופה';
+  rangeBtn.onclick=()=>{
+    if(!selectedEmployeeId2) return;
+    markAbsenceRange(Number(selectedEmployeeId2), fromDate, toDate, reason2);
+    render();
+  };
+  periodDiv.appendChild(rangeBtn);
+
+  card.appendChild(periodDiv);
+
+  // טבלת סיכום
+  const summary= document.createElement('div');
+  summary.className='p-4 shadow-lg rounded-2xl bg-white';
+
+  // כפתור ה-expandAll
+  const expandBtn= document.createElement('button');
+  expandBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100 mb-2';
+  expandBtn.textContent= expandAllAttendance? 'סגור את כל הפלוסים' : 'פתח את כל הפלוסים';
+  expandBtn.onclick= ()=> toggleExpandAllAttendance();
+  summary.appendChild(expandBtn);
+
+  const summaryTitle= document.createElement('h2');
+  summaryTitle.className='text-xl mb-2 font-bold text-gray-700';
+  summaryTitle.textContent='סיכום חיסורים לחודש הנוכחי';
+  summary.appendChild(summaryTitle);
+
+  const table= document.createElement('table');
+  table.className='min-w-full text-right mb-4 border-collapse';
+  const thead= document.createElement('thead');
+  thead.innerHTML=`
+    <tr class="border-b bg-gray-100">
+      <th class="px-4 py-2">עובד</th>
+      <th class="px-4 py-2">כמות חיסורים</th>
+      <th class="px-4 py-2">+</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody= document.createElement('tbody');
+  employees.forEach(e=>{
+    const row= document.createElement('tr');
+    row.className='border-b hover:bg-gray-50';
+
+    const count= getAbsencesCountForMonth(e.id);
+
+    // name
+    const nameTd= document.createElement('td');
+    nameTd.className='px-4 py-2';
+    nameTd.textContent= e.name + (e.status==='inactive'?' (לא פעיל)':'');
+    row.appendChild(nameTd);
+
+    // count
+    const cTd= document.createElement('td');
+    cTd.className='px-4 py-2';
+    cTd.textContent= count;
+    row.appendChild(cTd);
+
+    // plus
+    const plusTd= document.createElement('td');
+    plusTd.className='px-4 py-2';
+    const plusBtn= document.createElement('button');
+    plusBtn.className='border border-gray-300 px-2 py-1 rounded text-sm hover:bg-gray-100';
+    plusBtn.textContent= attendanceExpanded[e.id]? '-':'+';
+    plusBtn.onclick=()=>{
+      attendanceExpanded[e.id]= !attendanceExpanded[e.id];
+      render();
+    };
+    plusTd.appendChild(plusBtn);
+    row.appendChild(plusTd);
+
+    tbody.appendChild(row);
+
+    if(attendanceExpanded[e.id]){
+      // מציג את הרשומות
+      const detailRow= document.createElement('tr');
+      const cell= document.createElement('td');
+      cell.colSpan=3;
+      cell.className='bg-gray-50 p-2';
+
+      const arr= getAbsencesDetailForMonth(e.id);
+      if(arr.length===0) {
+        cell.innerHTML= `<div class="text-sm text-gray-500">אין חיסורים החודש עבור עובד זה</div>`;
+      } else {
+        // טבלה פנימית
+        let html=`
+          <table class="min-w-full text-right text-sm border-collapse">
+            <thead class="bg-gray-100">
+              <tr class="border-b">
+                <th class="px-2 py-1">תאריך</th>
+                <th class="px-2 py-1">סיבה</th>
+        `;
+        if(editModeAttendance) {
+          html+= `<th class="px-2 py-1">עריכה</th>`;
+        } else {
+          html+= `<th class="px-2 py-1">מחיקה</th>`;
+        }
+        html+=`</tr></thead><tbody>`;
+
+        arr.forEach(item=>{
+          if(!editModeAttendance){
+            // מצב תצוגה
+            html+=`
+              <tr class="border-b">
+                <td class="px-2 py-1">${item.date}</td>
+                <td class="px-2 py-1">${item.reason}</td>
+                <td class="px-2 py-1">
+                  <button class="border border-red-300 text-red-500 px-2 py-1 rounded text-sm"
+                    onclick="deleteAbsence(${e.id},'${item.date}')">מחק</button>
+                </td>
+              </tr>
+            `;
+          } else {
+            // מצב עריכה
+            html+=`
+              <tr class="border-b">
+                <td class="px-2 py-1">
+                  <input type="date" class="border rounded px-1"
+                    value="${item.date}"
+                    onchange="updateAbsence(${e.id}, '${item.date}', this.value, '${item.reason}')"
+                  />
+                </td>
+                <td class="px-2 py-1">
+                  <input type="text" class="border rounded px-1"
+                    value="${item.reason}"
+                    onchange="updateAbsence(${e.id}, '${item.date}', '${item.date}', this.value)"
+                  />
+                </td>
+                <td class="px-2 py-1">
+                  <button class="border border-red-300 text-red-500 px-2 py-1 rounded text-sm"
+                    onclick="deleteAbsence(${e.id},'${item.date}')">מחק</button>
+                </td>
+              </tr>
+            `;
+          }
+        });
+        html+=`</tbody></table>`;
+        cell.innerHTML= html;
+      }
+
+      detailRow.appendChild(cell);
+      tbody.appendChild(detailRow);
+    }
+  });
+  table.appendChild(tbody);
+  summary.appendChild(table);
+
+  // כפתורי יצוא/מייל
+  const btnContainer= document.createElement('div');
+  btnContainer.className='flex gap-2';
+
+  const exportBtn= document.createElement('button');
+  exportBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  exportBtn.textContent='יצוא לאקסל';
+  exportBtn.onclick=()=> exportToExcel('Attendance');
+  btnContainer.appendChild(exportBtn);
+
+  const mailBtn= document.createElement('button');
+  mailBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  mailBtn.textContent='שלח במייל';
+  mailBtn.onclick=()=> sendDataByEmail('Attendance');
+  btnContainer.appendChild(mailBtn);
+
+  summary.appendChild(btnContainer);
+
+  card.appendChild(summary);
+  container.appendChild(card);
+}
+
+/***************************************************
+ * Tardiness Tab
+ ***************************************************/
+function toggleTardinessEditMode(){
+  editModeTardiness= !editModeTardiness;
+  render();
+}
+function toggleExpandAllTardiness(){
+  expandAllTardiness= !expandAllTardiness;
+  if(expandAllTardiness){
+    employees.forEach(e=> tardinessExpanded[e.id]=true);
+  } else {
+    employees.forEach(e=> tardinessExpanded[e.id]=false);
+  }
+  render();
+}
+
+function renderTardiness(container){
+  const card= document.createElement('div');
+  card.className='p-4 shadow-lg rounded-2xl bg-white mb-4';
+
+  // כותרת + כפתור עריכה
+  const header= document.createElement('div');
+  header.className='flex items-center justify-between mb-2';
+
+  const title= document.createElement('h2');
+  title.className='text-2xl font-bold text-gray-700';
+  title.textContent='איחורים';
+  header.appendChild(title);
+
+  const editBtn= document.createElement('button');
+  editBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  editBtn.textContent= editModeTardiness? 'סיום עריכה' : 'עריכת נתונים';
+  editBtn.onclick= ()=> toggleTardinessEditMode();
+  header.appendChild(editBtn);
+
+  card.appendChild(header);
+
+  // Form הוספת איחור
+  const formDiv= document.createElement('div');
+  formDiv.className='flex gap-4 items-end flex-wrap mb-4';
+
+  let selectedEmpId='';
+  let tardyDate= getToday();
+  let tardyShift='08:00';
+  let tardyArrival='08:30';
+  let tardyReason='';
+
+  {
+    const d= document.createElement('div');
+    d.className='w-40';
+    const lbl= document.createElement('label');
+    lbl.textContent='בחר עובד:';
+    lbl.className='block font-semibold text-gray-600';
+    d.appendChild(lbl);
+
+    const sel= document.createElement('select');
+    sel.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    sel.innerHTML='<option value="">בחר עובד...</option>';
+    employees.forEach(e=>{
+      const opt= document.createElement('option');
+      opt.value=e.id;
+      opt.textContent=e.name;
+      sel.appendChild(opt);
+    });
+    sel.onchange=(ev)=> selectedEmpId= ev.target.value;
+    d.appendChild(sel);
+    formDiv.appendChild(d);
+  }
+  {
+    const d= document.createElement('div');
+    d.className='w-40';
+    const lbl= document.createElement('label');
+    lbl.className='block font-semibold text-gray-600';
+    lbl.textContent='תאריך איחור:';
+    d.appendChild(lbl);
+
+    const inp= document.createElement('input');
+    inp.type='date';
+    inp.value= tardyDate;
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.onchange=(ev)=> tardyDate= ev.target.value;
+    d.appendChild(inp);
+    formDiv.appendChild(d);
+  }
+  {
+    const d= document.createElement('div');
+    d.className='w-32';
+    const lbl= document.createElement('label');
+    lbl.textContent='תחילת משמרת:';
+    lbl.className='block font-semibold text-gray-600';
+    d.appendChild(lbl);
+
+    const inp= document.createElement('input');
+    inp.type='time';
+    inp.value= tardyShift;
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.onchange=(ev)=> tardyShift= ev.target.value;
+    d.appendChild(inp);
+    formDiv.appendChild(d);
+  }
+  {
+    const d= document.createElement('div');
+    d.className='w-32';
+    const lbl= document.createElement('label');
+    lbl.textContent='שעת הגעה:';
+    lbl.className='block font-semibold text-gray-600';
+    d.appendChild(lbl);
+
+    const inp= document.createElement('input');
+    inp.type='time';
+    inp.value= tardyArrival;
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.onchange=(ev)=> tardyArrival= ev.target.value;
+    d.appendChild(inp);
+    formDiv.appendChild(d);
+  }
+  {
+    const d= document.createElement('div');
+    d.className='w-60';
+    const lbl= document.createElement('label');
+    lbl.textContent='סיבת איחור:';
+    lbl.className='block font-semibold text-gray-600';
+    d.appendChild(lbl);
+
+    const inp= document.createElement('input');
+    inp.className='border rounded px-2 py-1 w-full focus:outline-none focus:ring';
+    inp.value= tardyReason;
+    inp.oninput=(ev)=> tardyReason= ev.target.value;
+    d.appendChild(inp);
+    formDiv.appendChild(d);
+  }
+
+  const addBtn= document.createElement('button');
+  addBtn.className='h-9 bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600';
+  addBtn.textContent='הוסף איחור';
+  addBtn.onclick=()=>{
+    if(!selectedEmpId) return;
+    addTardiness(Number(selectedEmpId), tardyDate, tardyReason, tardyShift, tardyArrival);
+    render();
+  };
+  formDiv.appendChild(addBtn);
+
+  card.appendChild(formDiv);
+
+  // טבלת סיכום
+  const summary= document.createElement('div');
+  summary.className='p-4 shadow-lg rounded-2xl bg-white';
+
+  const expandBtn= document.createElement('button');
+  expandBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100 mb-2';
+  expandBtn.textContent= expandAllTardiness? 'סגור את כל הפלוסים' : 'פתח את כל הפלוסים';
+  expandBtn.onclick= ()=> toggleExpandAllTardiness();
+  summary.appendChild(expandBtn);
+
+  const summaryTitle= document.createElement('h2');
+  summaryTitle.className='text-xl mb-2 font-bold text-gray-700';
+  summaryTitle.textContent='סיכום איחורים לחודש הנוכחי';
+  summary.appendChild(summaryTitle);
+
+  const table= document.createElement('table');
+  table.className='min-w-full text-right mb-4 border-collapse';
+  const thead= document.createElement('thead');
+  thead.innerHTML=`
+    <tr class="border-b bg-gray-100">
+      <th class="px-4 py-2">עובד</th>
+      <th class="px-4 py-2">כמות איחורים</th>
+      <th class="px-4 py-2">+</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody= document.createElement('tbody');
+  employees.forEach(e=>{
+    const row= document.createElement('tr');
+    row.className='border-b hover:bg-gray-50';
+
+    const tard= getTardinessCountForMonth(e.id);
+
+    const nameTd= document.createElement('td');
+    nameTd.className='px-4 py-2';
+    nameTd.textContent= e.name + (e.status==='inactive'?' (לא פעיל)':'');
+    row.appendChild(nameTd);
+
+    const cntTd= document.createElement('td');
+    cntTd.className='px-4 py-2';
+    cntTd.textContent= tard;
+    row.appendChild(cntTd);
+
+    const plusTd= document.createElement('td');
+    plusTd.className='px-4 py-2';
+    const plusBtn= document.createElement('button');
+    plusBtn.className='border border-gray-300 px-2 py-1 rounded text-sm hover:bg-gray-100';
+    plusBtn.textContent= tardinessExpanded[e.id]? '-' : '+';
+    plusBtn.onclick= ()=>{
+      tardinessExpanded[e.id]= !tardinessExpanded[e.id];
+      render();
+    };
+    plusTd.appendChild(plusBtn);
+    row.appendChild(plusTd);
+
+    tbody.appendChild(row);
+
+    if(tardinessExpanded[e.id]){
+      // מציגים את פירוט האיחורים
+      const detailRow= document.createElement('tr');
+      detailRow.className='border-b';
+      const cell= document.createElement('td');
+      cell.colSpan=3;
+      cell.className='bg-gray-50 p-2';
+
+      const arr= getTardinessDetailForMonth(e.id);
+      if(arr.length===0){
+        cell.innerHTML='<div class="text-sm text-gray-500">אין איחורים</div>';
+      } else {
+        let html=`
+          <table class="min-w-full text-right text-sm border-collapse">
+            <thead class="bg-gray-100">
+              <tr class="border-b">
+                <th class="px-2 py-1">תאריך</th>
+                <th class="px-2 py-1">סיבה</th>
+                <th class="px-2 py-1">תחילת משמרת</th>
+                <th class="px-2 py-1">שעת הגעה</th>
+                <th class="px-2 py-1">איחור(דק)</th>
+        `;
+        if(editModeTardiness){
+          html+= `<th class="px-2 py-1">עריכה</th>`;
+        } else {
+          html+= `<th class="px-2 py-1">מחיקה</th>`;
+        }
+        html+=`</tr></thead><tbody>`;
+        
+        arr.forEach(obj=>{
+          const it= obj.reasonObj;
+          if(!editModeTardiness){
+            html+=`
+              <tr class="border-b">
+                <td class="px-2 py-1">${obj.date}</td>
+                <td class="px-2 py-1">${it.reason}</td>
+                <td class="px-2 py-1">${it.shiftStart}</td>
+                <td class="px-2 py-1">${it.arrivalTime}</td>
+                <td class="px-2 py-1">${it.minutesLate}</td>
+                <td class="px-2 py-1">
+                  <button class="border border-red-300 text-red-500 px-2 py-1 rounded text-sm"
+                    onclick="deleteTardiness(${e.id},'${obj.date}',${it.id})">מחק</button>
+                </td>
+              </tr>
+            `;
+          } else {
+            // מצב עריכה
+            html+=`
+              <tr class="border-b">
+                <td class="px-2 py-1">
+                  <input type="date" class="border rounded px-1"
+                    value="${obj.date}"
+                    onchange="updateTardiness(${e.id},'${obj.date}',${it.id}, this.value, '${it.reason}', '${it.shiftStart}', '${it.arrivalTime}')"
+                  />
+                </td>
+                <td class="px-2 py-1">
+                  <input type="text" class="border rounded px-1" value="${it.reason}"
+                    onchange="updateTardiness(${e.id},'${obj.date}',${it.id},'${obj.date}', this.value, '${it.shiftStart}', '${it.arrivalTime}')"
+                  />
+                </td>
+                <td class="px-2 py-1">
+                  <input type="time" class="border rounded px-1" value="${it.shiftStart}"
+                    onchange="updateTardiness(${e.id},'${obj.date}',${it.id},'${obj.date}','${it.reason}', this.value, '${it.arrivalTime}')"
+                  />
+                </td>
+                <td class="px-2 py-1">
+                  <input type="time" class="border rounded px-1" value="${it.arrivalTime}"
+                    onchange="updateTardiness(${e.id},'${obj.date}',${it.id},'${obj.date}','${it.reason}','${it.shiftStart}', this.value)"
+                  />
+                </td>
+                <td class="px-2 py-1">${it.minutesLate}</td>
+                <td class="px-2 py-1">
+                  <button class="border border-red-300 text-red-500 px-2 py-1 rounded text-sm"
+                    onclick="deleteTardiness(${e.id},'${obj.date}',${it.id})">מחק</button>
+                </td>
+              </tr>
+            `;
+          }
+        });
+        html+=`</tbody></table>`;
+        cell.innerHTML= html;
+      }
+      detailRow.appendChild(cell);
+      tbody.appendChild(detailRow);
+    }
+  });
+  table.appendChild(tbody);
+  summary.appendChild(table);
+
+  const btnContainer= document.createElement('div');
+  btnContainer.className='flex gap-2';
+
+  const exportBtn= document.createElement('button');
+  exportBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  exportBtn.textContent='יצוא לאקסל';
+  exportBtn.onclick=()=> exportToExcel('Tardiness');
+  btnContainer.appendChild(exportBtn);
+
+  const mailBtn= document.createElement('button');
+  mailBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  mailBtn.textContent='שלח במייל';
+  mailBtn.onclick=()=> sendDataByEmail('Tardiness');
+  btnContainer.appendChild(mailBtn);
+
+  summary.appendChild(btnContainer);
+
+  card.appendChild(summary);
+  container.appendChild(card);
+}
+
+/***************************************************
+ * Meetings Tab
+ ***************************************************/
+function toggleMeetingsEditMode(){
+  editModeMeetings= !editModeMeetings;
+  render();
+}
+
+function renderMeetings(container){
+  const card= document.createElement('div');
+  card.className='p-4 shadow-lg rounded-2xl bg-white mb-4';
+
+  // כותרת + כפתור עריכה
+  const header= document.createElement('div');
+  header.className='flex items-center justify-between mb-2';
+
+  const title= document.createElement('h2');
+  title.className='text-2xl font-bold text-gray-700';
+  title.textContent='פגישות';
+  header.appendChild(title);
+
+  const editBtn= document.createElement('button');
+  editBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  editBtn.textContent= editModeMeetings? 'סיום עריכה' : 'עריכת נתונים';
+  editBtn.onclick= ()=> toggleMeetingsEditMode();
+  header.appendChild(editBtn);
+
+  card.appendChild(header);
+
+  // Form הוספת פגישה
+  const formDiv= document.createElement('div');
+  formDiv.className='grid gap-2 mb-4';
+
+  let meetingTitle= '';
+  let meetingDate= getToday();
+  let meetingEmp='';
+
+  {
+    const lbl= document.createElement('label');
+    lbl.className='font-semibold text-gray-600';
+    lbl.textContent='כותרת פגישה';
+    formDiv.appendChild(lbl);
+
+    const inp= document.createElement('input');
+    inp.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+    inp.oninput=(e)=> meetingTitle=e.target.value;
+    formDiv.appendChild(inp);
+  }
+  {
+    const lbl= document.createElement('label');
+    lbl.className='font-semibold text-gray-600';
+    lbl.textContent='תאריך';
+    formDiv.appendChild(lbl);
+
+    const inp= document.createElement('input');
+    inp.type='date';
+    inp.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+    inp.value= meetingDate;
+    inp.onchange=(e)=> meetingDate= e.target.value;
+    formDiv.appendChild(inp);
+  }
+  {
+    const lbl= document.createElement('label');
+    lbl.className='font-semibold text-gray-600';
+    lbl.textContent='בחר עובד';
+    formDiv.appendChild(lbl);
+
+    const sel= document.createElement('select');
+    sel.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+    sel.innerHTML= '<option value="">בחר עובד...</option>';
+    employees.forEach(emp=>{
+      const opt= document.createElement('option');
+      opt.value= emp.id;
+      opt.textContent= emp.name;
+      sel.appendChild(opt);
+    });
+    sel.onchange=(e)=> meetingEmp= e.target.value;
+    formDiv.appendChild(sel);
+  }
+
+  const addBtn= document.createElement('button');
+  addBtn.className='mt-2 bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600';
+  addBtn.textContent='הוסף פגישה';
+  addBtn.onclick= ()=>{
+    if(!meetingTitle || !meetingDate || !meetingEmp) return;
+    const newId= meetings.length? Math.max(...meetings.map(m=> m.id))+1 :1;
+    meetings.push({
+      id:newId,
+      title:meetingTitle.trim(),
+      date:meetingDate,
+      employeeId:Number(meetingEmp)
+    });
+    saveToLocalStorage();
+    render();
+  };
+  formDiv.appendChild(addBtn);
+
+  card.appendChild(formDiv);
+
+  const hr= document.createElement('hr');
+  hr.className='my-4';
+  card.appendChild(hr);
+
+  // טבלת פגישות לחודש
+  const table= document.createElement('table');
+  table.className='min-w-full text-right border-collapse';
+  const thead= document.createElement('thead');
+  thead.innerHTML=`
+    <tr class="border-b bg-gray-100">
+      <th class="px-4 py-2">כותרת</th>
+      <th class="px-4 py-2">תאריך</th>
+      <th class="px-4 py-2">עובד</th>
+      <th class="px-4 py-2">מחק/ערוך</th>
+    </tr>
+  `;
+  table.appendChild(thead);
+
+  const tbody= document.createElement('tbody');
+  const sorted= [...meetings].sort((a,b)=>(a.date<b.date? -1:1));
+  sorted.forEach(m=>{
+    if(getYearMonth(m.date)!== globalFilterMonth) return;
+    const emp= employees.find(e=> e.id=== m.employeeId);
+    const row= document.createElement('tr');
+    row.className='border-b hover:bg-gray-50';
+
+    // title
+    const titleTd= document.createElement('td');
+    titleTd.className='px-4 py-2';
+    if(!editModeMeetings){
+      titleTd.textContent= m.title;
+    } else {
+      const inp= document.createElement('input');
+      inp.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+      inp.value= m.title;
+      inp.onchange=(ev)=> updateMeeting(m, ev.target.value, m.date, m.employeeId);
+      titleTd.appendChild(inp);
+    }
+    row.appendChild(titleTd);
+
+    // date
+    const dateTd= document.createElement('td');
+    dateTd.className='px-4 py-2';
+    if(!editModeMeetings){
+      dateTd.textContent= m.date;
+    } else {
+      const inp= document.createElement('input');
+      inp.type='date';
+      inp.className='border rounded px-2 py-1 focus:outline-none focus:ring';
+      inp.value= m.date;
+      inp.onchange=(ev)=> updateMeeting(m, m.title, ev.target.value, m.employeeId);
+      dateTd.appendChild(inp);
+    }
+    row.appendChild(dateTd);
+
+    // employee
+    const empTd= document.createElement('td');
+    empTd.className='px-4 py-2 text-blue-700 underline cursor-pointer';
+    empTd.textContent= emp? emp.name:'לא קיים';
+    empTd.onclick=()=> emp && showEmployeeDetails(emp.id);
+    row.appendChild(empTd);
+
+    // פעולות
+    const actTd= document.createElement('td');
+    actTd.className='px-4 py-2';
+    const delBtn= document.createElement('button');
+    delBtn.className='border border-red-300 text-red-500 rounded px-2 py-1 text-sm hover:bg-red-50';
+    delBtn.textContent='מחק';
+    delBtn.onclick= ()=> deleteMeeting(m.id);
+    actTd.appendChild(delBtn);
+
+    if(editModeMeetings){
+      // עריכת employeeId
+      const sel= document.createElement('select');
+      sel.className='border rounded px-2 py-1 text-sm ml-2';
+      employees.forEach(e=>{
+        const o= document.createElement('option');
+        o.value= e.id;
+        o.textContent= e.name;
+        sel.appendChild(o);
+      });
+      sel.value= m.employeeId;
+      sel.onchange=(ev)=> updateMeeting(m, m.title, m.date, ev.target.value);
+      actTd.appendChild(sel);
+    }
+
+    row.appendChild(actTd);
+
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  card.appendChild(table);
+
+  // כפתורי יצוא/שליחה
+  const btnContainer= document.createElement('div');
+  btnContainer.className='flex gap-2 mt-4';
+
+  const exportBtn= document.createElement('button');
+  exportBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  exportBtn.textContent='יצוא לאקסל';
+  exportBtn.onclick=()=> exportToExcel('Meetings');
+  btnContainer.appendChild(exportBtn);
+
+  const mailBtn= document.createElement('button');
+  mailBtn.className='border border-gray-300 rounded px-4 py-2 hover:bg-gray-100';
+  mailBtn.textContent='שלח במייל';
+  mailBtn.onclick=()=> sendDataByEmail('Meetings');
+  btnContainer.appendChild(mailBtn);
+
+  card.appendChild(btnContainer);
+
+  container.appendChild(card);
+}
+
+/***************************************************
+ * הצגת פרטי עובד (Popup)
+ ***************************************************/
+function showEmployeeDetails(empId){
+  const emp= employees.find(e=> e.id=== empId);
+  if(!emp) return;
+  const t= getTardinessCountForMonth(empId);
+  const a= getAbsencesCountForMonth(empId);
+  const m= getMeetingsCountForMonth(empId);
+  const p= calculatePositionRate(empId);
+
+  alert(
+    `פרטי עובד:\n`+
+    `שם: ${emp.name}\n`+
+    `תפקיד: ${emp.role}\n`+
+    `סטטוס: ${emp.status}\n`+
+    `אחוז משרה: ${emp.percentPosition}%\n`+
+    `תאריך התחלה: ${emp.startDate}\n`+
+    (emp.status==='inactive'? `תאריך סיום: ${emp.endDate}\n`: '')+
+    `\n---\n`+
+    `איחורים החודש: ${t}\n`+
+    `חיסורים החודש: ${a}\n`+
+    `פגישות החודש: ${m}\n`+
+    `אחוז עמידה במשרה: ${p}%`
+  );
+}
+
+/***************************************************
+ *   הפעלה ראשונית
+ ***************************************************/
+render();
